@@ -6,12 +6,17 @@ extracts structured operational signals, and writes results to
 results/operational_signals.csv.
 
 Usage:
-    python scripts/extract_operational_signals.py
+    python scripts/extract_operational_signals.py [--workers N]
+
+Options:
+    --workers N   Number of parallel API calls (default: 1, max: 10)
 
 Environment variable required:
     OPENAI_API_KEY — your OpenAI API key
 """
 
+import argparse
+import concurrent.futures
 import csv
 import json
 import os
@@ -166,7 +171,51 @@ def _error_result(message: str) -> dict:
     return result
 
 
+def process_row(args):
+    """Worker function: process a single row and return (index, output_row)."""
+    idx, row, client, model, total = args
+    title = row.get("job_title", f"Row {idx}")
+    company = row.get("company", "")
+    print(f"[{idx}/{total}] Processing: {title} @ {company} ...")
+
+    signals = extract_signals(client, row, model)
+
+    output_row = {
+        "job_title": row.get("job_title", ""),
+        "company": row.get("company", ""),
+        "industry": row.get("industry", ""),
+    }
+    output_row.update(signals)
+
+    status = signals.get("extraction_status", "")
+    if status == "ok":
+        score = signals.get("ai_opportunity_score_1_to_10", "")
+        print(f"  [{idx}/{total}] OK — AI opportunity score: {score}/10")
+    else:
+        print(f"  [{idx}/{total}] FAILED — {status}")
+
+    return idx, output_row
+
+
 def main():
+    def workers_in_range(value):
+        n = int(value)
+        if n < 1 or n > 10:
+            raise argparse.ArgumentTypeError("--workers must be between 1 and 10")
+        return n
+
+    parser = argparse.ArgumentParser(description="Extract operational signals from job postings.")
+    parser.add_argument(
+        "--workers",
+        type=workers_in_range,
+        default=1,
+        metavar="N",
+        help="Number of parallel API calls (default: 1, max: 10)",
+    )
+    args = parser.parse_args()
+
+    workers = args.workers
+
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
         print("ERROR: OPENAI_API_KEY environment variable is not set.")
@@ -184,6 +233,7 @@ def main():
     print(f"Reading job postings from: {INPUT_CSV}")
     print(f"Writing results to:        {OUTPUT_CSV}")
     print(f"Model:                     {model}")
+    print(f"Workers:                   {workers}")
     print()
 
     rows = []
@@ -196,45 +246,58 @@ def main():
         print("ERROR: Input CSV is empty or has no data rows.")
         sys.exit(1)
 
-    print(f"Found {len(rows)} job posting(s) to process.\n")
+    total = len(rows)
+    print(f"Found {total} job posting(s) to process.\n")
+
+    work_items = [(i, row, client, model, total) for i, row in enumerate(rows, start=1)]
+
+    results = [None] * total
+    ok_count = 0
+    error_count = 0
+    start_time = time.time()
+
+    if workers == 1:
+        for item in work_items:
+            idx, output_row = process_row(item)
+            results[idx - 1] = output_row
+            status = output_row.get("extraction_status", "")
+            if status == "ok":
+                ok_count += 1
+            else:
+                error_count += 1
+            if idx < total:
+                time.sleep(0.5)
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(process_row, item): item[0] for item in work_items}
+            done_count = 0
+
+            for future in concurrent.futures.as_completed(futures):
+                idx, output_row = future.result()
+                results[idx - 1] = output_row
+                status = output_row.get("extraction_status", "")
+                if status == "ok":
+                    ok_count += 1
+                else:
+                    error_count += 1
+                done_count += 1
+                elapsed = time.time() - start_time
+                throughput = done_count / elapsed if elapsed > 0 else 0
+                print(
+                    f"  Progress: {done_count}/{total} done "
+                    f"({throughput:.2f} postings/sec, {workers} workers)"
+                )
 
     with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as out_f:
         writer = csv.DictWriter(out_f, fieldnames=OUTPUT_FIELDS, extrasaction="ignore")
         writer.writeheader()
-
-        ok_count = 0
-        error_count = 0
-
-        for i, row in enumerate(rows, start=1):
-            title = row.get("job_title", f"Row {i}")
-            company = row.get("company", "")
-            print(f"[{i}/{len(rows)}] Processing: {title} @ {company} ...")
-
-            signals = extract_signals(client, row, model)
-
-            output_row = {
-                "job_title": row.get("job_title", ""),
-                "company": row.get("company", ""),
-                "industry": row.get("industry", ""),
-            }
-            output_row.update(signals)
+        for output_row in results:
             writer.writerow(output_row)
-            out_f.flush()
 
-            status = signals.get("extraction_status", "")
-            if status == "ok":
-                ok_count += 1
-                score = signals.get("ai_opportunity_score_1_to_10", "")
-                print(f"  OK — AI opportunity score: {score}/10")
-            else:
-                error_count += 1
-                print(f"  FAILED — {status}")
-
-            if i < len(rows):
-                time.sleep(0.5)
-
+    elapsed = time.time() - start_time
     print()
     print(f"Done. {ok_count} succeeded, {error_count} failed.")
+    print(f"Total time: {elapsed:.1f}s ({total / elapsed:.2f} postings/sec)")
     print(f"Results saved to: {OUTPUT_CSV}")
 
 
