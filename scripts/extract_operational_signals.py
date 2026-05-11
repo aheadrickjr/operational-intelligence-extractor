@@ -116,9 +116,18 @@ def extract_signals(client: OpenAI, row: dict, model: str, retry_delay: float = 
             raw = strip_json_fences(raw)
             data = json.loads(raw)
 
+            missing = [f for f in EXTRACTION_FIELDS if f not in data]
+            if missing:
+                msg = f"missing required keys: {', '.join(missing)}"
+                print(f"  [WARNING] {msg}")
+                if attempt < 3:
+                    time.sleep(retry_delay)
+                    continue
+                return _error_result(msg)
+
             result = {}
             for field in EXTRACTION_FIELDS:
-                result[field] = data.get(field, "")
+                result[field] = data[field]
 
             score = result.get("ai_opportunity_score_1_to_10", "")
             if isinstance(score, (int, float)):
