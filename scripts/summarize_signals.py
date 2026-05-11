@@ -86,7 +86,10 @@ def top_terms(rows: list[dict], field: str, n: int = TOP_N) -> list[tuple[str, i
 def compliance_by_industry(rows: list[dict]) -> list[tuple[str, int, int, float]]:
     """
     Return list of (industry, compliance_count, total, pct) sorted by pct desc.
-    Only includes industries with at least 2 postings.
+
+    Industries with only one posting are excluded from the ranking because a
+    single data point produces an untrustworthy 0% or 100% figure. The minimum
+    threshold is 2 postings per industry; this is noted in the report output.
     """
     totals: Counter = Counter()
     compliant: Counter = Counter()
@@ -195,6 +198,9 @@ def build_report(rows: list[dict]) -> str:
     lines.append(divider())
     lines.append("4. INDUSTRIES WITH HIGHEST COMPLIANCE / AUDIT PRESSURE")
     lines.append(divider("-"))
+    lines.append("  Note: industries with fewer than 2 postings are excluded — a single")
+    lines.append("  data point would produce a misleading 0% or 100% figure.")
+    lines.append("")
     lines.append(f"  {'Rank':<5} {'Industry':<35} {'% Compliance':>12}  {'(n/total)':>10}")
     lines.append(f"  {'-'*4}  {'-'*34}  {'-'*12}  {'-'*10}")
     compliance = compliance_by_industry(rows)
@@ -202,12 +208,12 @@ def build_report(rows: list[dict]) -> str:
         for rank, (industry, count, total, pct) in enumerate(compliance[:TOP_N], start=1):
             lines.append(f"  {rank:<5} {industry:<35} {pct:>11.0f}%   {count:>3}/{total:<3}")
     else:
-        lines.append("  (no data — need ≥2 postings per industry)")
+        lines.append("  (no qualifying industries — need ≥2 postings per industry)")
     lines.append("")
 
-    # --- 5. Most common pain points ---
+    # --- 5. Most common pain points (frequency ranking) ---
     lines.append(divider())
-    lines.append("5. MOST FREQUENTLY MENTIONED PAIN POINTS")
+    lines.append("5. MOST FREQUENTLY MENTIONED PAIN POINTS (FREQUENCY RANKING)")
     lines.append(divider("-"))
     pain_points = top_terms(rows, "pain_points")
     if pain_points:
